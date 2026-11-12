@@ -6,70 +6,390 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>نظام تسجيل الحضور</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
+
   <style>
-    body {
+    * {
+      box-sizing: border-box;
       font-family: Arial, sans-serif;
-      text-align: center;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
       background: #f3f5f8;
-      padding: 20px;
+      color: #222;
     }
+
     .container {
+      max-width: 480px;
+      margin: 25px auto;
+      padding: 22px;
       background: white;
-      max-width: 500px;
-      margin: auto;
-      padding: 20px;
-      border-radius: 15px;
+      border-radius: 14px;
+      box-shadow: 0 3px 15px #00000012;
     }
-    button {
-      background: #176b45;
-      color: white;
-      border: 0;
-      padding: 13px 25px;
+
+    h2 {
+      text-align: center;
+      margin-top: 0;
+      color: #173b65;
+    }
+
+    input, select, button {
+      width: 100%;
+      padding: 13px;
+      margin: 8px 0;
       border-radius: 8px;
-      font-size: 17px;
+      border: 1px solid #ccc;
+      font-size: 16px;
+    }
+
+    button {
+      border: none;
+      background: #173b65;
+      color: white;
       cursor: pointer;
     }
-    #reader {
-      margin-top: 20px;
+
+    button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
     }
-    #status {
+
+    .secondary {
+      background: #666;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    #reader {
+      width: 100%;
       margin-top: 15px;
-      font-weight: bold;
+    }
+
+    #status {
+      padding: 12px;
+      background: #f1f3f5;
+      border-radius: 8px;
+      text-align: center;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+
+    .small {
+      font-size: 13px;
+      color: #666;
+      text-align: center;
     }
   </style>
 </head>
+
 <body>
+
+  <iframe
+    id="bridgeFrame"
+    src="https://script.google.com/macros/s/AKfycbwuqFij3OHu-uVFYghAS4CKVz0CFQLbjCLCziJLXP9QFWd84weWAZUAyba9yzzh9xCN/exec?page=bridge"
+    style="display:none"
+    title="الاتصال بالنظام">
+  </iframe>
+
   <div class="container">
     <h2>نظام تسجيل الحضور</h2>
-    <p>اختبار تشغيل ماسح QR</p>
-    <button onclick="startScanner()">فتح الكاميرا</button>
-    <div id="reader"></div>
-    <p id="status">الماسح جاهز</p>
+
+    <div id="loginSection">
+      <p>تسجيل دخول المسؤول</p>
+
+      <input
+        id="adminCode"
+        type="text"
+        placeholder="كود المسؤول"
+        autocomplete="username">
+
+      <input
+        id="adminPassword"
+        type="password"
+        placeholder="كلمة المرور"
+        autocomplete="current-password">
+
+      <button id="loginButton" onclick="login()">تسجيل الدخول</button>
+    </div>
+
+    <div id="attendanceSection" class="hidden">
+      <p id="welcome"></p>
+
+      <label for="eventSelect">اختر الفعالية:</label>
+      <select id="eventSelect">
+        <option value="">جاري تحميل الفعاليات...</option>
+      </select>
+
+      <button id="startButton" onclick="startScanner()">فتح الكاميرا</button>
+      <div id="reader"></div>
+
+      <p id="status">الماسح جاهز.</p>
+
+      <button class="secondary" onclick="logout()">تسجيل الخروج</button>
+    </div>
+
+    <p class="small">نظام الحضور والانصراف - أسرة طلاب من أجل مصر</p>
   </div>
 
-  <script>
-    let scanner;
+<script>
+  const bridgeFrame = document.getElementById("bridgeFrame");
 
-    function startScanner() {
-      document.getElementById("status").textContent =
-        "جاري تشغيل الكاميرا...";
+  let bridgeLoaded = false;
+  let adminToken = "";
+  let adminName = "";
+  let scanner = null;
+  let scanBusy = false;
+  let pendingRequests = {};
 
-      scanner = new Html5Qrcode("reader");
+  bridgeFrame.addEventListener("load", function() {
+    bridgeLoaded = true;
+  });
 
-      scanner.start(
+  function setStatus(message) {
+    document.getElementById("status").textContent = message;
+  }
+
+  function sendRequest(type, payload = {}) {
+    return new Promise((resolve, reject) => {
+      if (!bridgeLoaded || !bridgeFrame.contentWindow) {
+        reject(new Error("تعذر الاتصال بالخادم. أعد تحميل الصفحة."));
+        return;
+      }
+
+      const requestId =
+        Date.now().toString() + Math.random().toString(36).slice(2);
+
+      const timeout = setTimeout(() => {
+        delete pendingRequests[requestId];
+        reject(new Error("انتهت مهلة الاتصال. حاول مرة أخرى."));
+      }, 20000);
+
+      pendingRequests[requestId] = {
+        resolve: resolve,
+        reject: reject,
+        timeout: timeout
+      };
+
+      bridgeFrame.contentWindow.postMessage({
+        type: type,
+        requestId: requestId,
+        ...payload
+      }, "*");
+    });
+  }
+
+  window.addEventListener("message", function(event) {
+    if (event.source !== bridgeFrame.contentWindow) return;
+
+    const data = event.data;
+    if (!data || typeof data !== "object") return;
+
+    const request = pendingRequests[data.requestId];
+    if (!request) return;
+
+    clearTimeout(request.timeout);
+    delete pendingRequests[data.requestId];
+
+    request.resolve(data.result);
+  });
+
+  async function login() {
+    const code = document.getElementById("adminCode").value.trim();
+    const password = document.getElementById("adminPassword").value;
+    const button = document.getElementById("loginButton");
+
+    if (!code || !password) {
+      alert("اكتب كود المسؤول وكلمة المرور.");
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "جاري تسجيل الدخول...";
+
+    try {
+      const result = await sendRequest("LOGIN_REQUEST", {
+        code: code,
+        password: password
+      });
+
+      if (!result || !result.success) {
+        alert(result?.message || "تعذر تسجيل الدخول.");
+        return;
+      }
+
+      adminToken = result.token;
+      adminName = result.name;
+
+      document.getElementById("loginSection").classList.add("hidden");
+      document.getElementById("attendanceSection").classList.remove("hidden");
+      document.getElementById("welcome").textContent =
+        "أهلاً " + adminName;
+
+      document.getElementById("adminPassword").value = "";
+
+      await loadEvents();
+
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = "تسجيل الدخول";
+    }
+  }
+
+  async function loadEvents() {
+    const select = document.getElementById("eventSelect");
+    select.innerHTML = '<option value="">جاري تحميل الفعاليات...</option>';
+
+    try {
+      const result = await sendRequest("EVENTS_REQUEST", {
+        token: adminToken
+      });
+
+      if (!result || !result.success) {
+        select.innerHTML = '<option value="">تعذر تحميل الفعاليات</option>';
+        setStatus(result?.message || "تعذر تحميل الفعاليات.");
+        return;
+      }
+
+      select.innerHTML = '<option value="">اختر الفعالية</option>';
+
+      result.events.forEach(event => {
+        const option = document.createElement("option");
+        option.value = event.id;
+        option.textContent = event.name + " - " + event.id;
+        select.appendChild(option);
+      });
+
+      setStatus("تم تحميل الفعاليات. اختر الفعالية لبدء المسح.");
+
+    } catch (error) {
+      select.innerHTML = '<option value="">حدث خطأ</option>';
+      setStatus(error.message);
+    }
+  }
+
+  async function startScanner() {
+    if (!adminToken) {
+      setStatus("سجل الدخول أولاً.");
+      return;
+    }
+
+    if (!document.getElementById("eventSelect").value) {
+      setStatus("اختر الفعالية أولاً.");
+      return;
+    }
+
+    if (typeof Html5Qrcode === "undefined") {
+      setStatus("تعذر تحميل مكتبة قراءة QR. تحقق من الإنترنت.");
+      return;
+    }
+
+    if (scanner) {
+      try {
+        await scanner.stop();
+        scanner.clear();
+      } catch (e) {}
+      scanner = null;
+    }
+
+    scanBusy = false;
+    document.getElementById("startButton").disabled = true;
+    setStatus("جاري تشغيل الكاميرا...");
+
+    scanner = new Html5Qrcode("reader");
+
+    try {
+      await scanner.start(
         { facingMode: "environment" },
         { fps: 10, qrbox: 250 },
-        async (decodedText) => {
-          document.getElementById("status").textContent =
-            "تم قراءة QR بنجاح: " + decodedText;
-
-          await scanner.stop();
+        async function(decodedText) {
+          if (scanBusy) return;
+          scanBusy = true;
+          await registerAttendance(decodedText);
         }
-      ).catch(error => {
-        document.getElementById("status").textContent =
-          "تعذر تشغيل الكاميرا: " + error;
-      });
+      );
+
+      setStatus("الكاميرا تعمل. وجّهها إلى رمز QR.");
+
+    } catch (error) {
+      setStatus("تعذر تشغيل الكاميرا: " + error);
+      document.getElementById("startButton").disabled = false;
+      scanner = null;
     }
-  </script>
+  }
+
+  async function registerAttendance(decodedText) {
+    const eventId = document.getElementById("eventSelect").value;
+
+    setStatus("جاري التحقق وتسجيل الحضور...");
+
+    try {
+      const result = await sendRequest("ATTENDANCE_REQUEST", {
+        decodedText: decodedText,
+        eventId: eventId,
+        token: adminToken
+      });
+
+      if (result && result.unauthorized) {
+        setStatus(result.message);
+        await stopScanner();
+        adminToken = "";
+        return;
+      }
+
+      if (result && result.success) {
+        setStatus("تم تسجيل الحضور بنجاح: " + result.memberName);
+      } else {
+        setStatus(result?.message || "لم يتم تسجيل الحضور.");
+      }
+
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      scanBusy = false;
+    }
+  }
+
+  async function stopScanner() {
+    if (scanner) {
+      try {
+        await scanner.stop();
+        scanner.clear();
+      } catch (error) {}
+
+      scanner = null;
+    }
+
+    document.getElementById("startButton").disabled = false;
+  }
+
+  async function logout() {
+    await stopScanner();
+
+    if (adminToken) {
+      try {
+        await sendRequest("LOGOUT_REQUEST", {
+          token: adminToken
+        });
+      } catch (error) {}
+    }
+
+    adminToken = "";
+    adminName = "";
+
+    document.getElementById("attendanceSection").classList.add("hidden");
+    document.getElementById("loginSection").classList.remove("hidden");
+    document.getElementById("adminCode").value = "";
+    document.getElementById("adminPassword").value = "";
+
+    setStatus("تم تسجيل الخروج.");
+  }
+</script>
+
 </body>
 </html>
